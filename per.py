@@ -2,9 +2,17 @@ import re
 import subprocess
 import time
 from subprocess import Popen, PIPE
+import requests
+import json
 
 # ========== ADB Utility Functions ==========
 CREATE_NO_WINDOW = 0x08000000
+APK_PATH = "./app-debug.apk"  
+PACKAGE_NAME = "com.example.batteryapi"
+SERVICE_CLASS = "com.example.batteryapi/com.example.batteryapi.BatteryService"
+PORT = 8080
+def run(cmd):
+    return subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode("utf-8", errors="ignore")
 def run_adb_command(cmd):
     try:
         result = subprocess.run(["adb"] + cmd, capture_output=True, text=True, encoding="utf-8", timeout=5,creationflags=CREATE_NO_WINDOW)
@@ -18,7 +26,6 @@ def enable_wifi_debug():
     # 先抓 IP
     subprocess.run("adb devices",capture_output=True, text=True,creationflags=CREATE_NO_WINDOW)
     output = run_adb_command(["shell", "ip route"])
-    # print("route output:", output)
 
     ip_addr = ""
     for line in output.splitlines():
@@ -27,7 +34,6 @@ def enable_wifi_debug():
             break
 
     if not ip_addr:
-        # print("無法取得 IP")
         return ""
 
     # 然後才切換為 TCP 模式
@@ -102,20 +108,6 @@ def calculate_jank_by_vsync_triplets(triplets, refresh_period_ns):
             big_jank_count += 1
 
     return jank_count, big_jank_count
-def dump_surfaceflinger_latency_triplets(layer_name):
-    cmd = f'adb shell dumpsys SurfaceFlinger --latency \\"{layer_name}\\"'
-    p = Popen(cmd, shell=True, stdout=PIPE, stderr=PIPE, universal_newlines=True,creationflags=CREATE_NO_WINDOW)
-    triplets = []
-    for line in p.stdout:
-        parts = line.strip().split('\t')
-        if len(parts) == 3:
-            try:
-                a, b, c = map(int, parts)
-                if c != 0 and c < 9223372036854775807:
-                    triplets.append((a, b, c))
-            except:
-                pass
-    return triplets
 
 def dump_layer_stats(layer_name):
     cmd = f'adb shell dumpsys SurfaceFlinger --latency \\"{layer_name}\\"'
@@ -191,10 +183,83 @@ def get_cpu_usage_and_freq():
         idx += 1
 
     return usages, freqs
-def get_cpu_temp():
-    temp = run_adb_command(["shell", "cat", "/sys/class/thermal/thermal_zone0/temp"])
-    return int(temp)/1000 if temp.isdigit() else 0
+def get_battery_temp():
+    output =run("adb shell dumpsys battery | grep temperature")
+    match = re.search(r':\s*(\d+)', output)
 
+    if match:
+        # match.group(1) 提取括號 () 內的數字，即 "323"
+        temp_str = match.group(1)
+        
+        try:
+            # 轉換為整數 (323)，然後除以 1000 得到攝氏度 (32.3)
+            temp_int = int(temp_str)
+            return temp_int / 10
+        except ValueError:
+            # 如果抓到的內容不是有效數字，則返回 0
+            return 0
+    else:
+        # 如果沒有找到匹配的 "temperature: <數字>" 模式，則返回 0
+        return 0
+def install_and_start_service():
+    print("[*] 正在安裝手機端服務...")
+    try:
+        # 1. 先嘗試安裝/更新
+        run(f'adb install -r "{APK_PATH}"') 
+    except subprocess.CalledProcessError as e:
+        # 2. 如果安裝失敗，嘗試先卸載再安裝
+        run(f"adb uninstall {PACKAGE_NAME}")
+        run(f'adb install "{APK_PATH}"')
+
+    # 3. 確保使用 start-foreground-service 啟動，以避免 Android 8.0+ 的限制
+    start_cmd = f"adb shell am start-foreground-service -n {SERVICE_CLASS}"
+    try:
+        run(start_cmd)
+        print("✅ 服務啟動成功")
+    except subprocess.CalledProcessError as e:
+        # 啟動失敗通常是 Manifest 或代碼問題，這裡列出錯誤訊息
+        print(e.output)
+def get_device_ip():
+    output = run("adb shell ip addr show wlan0")
+    match = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", output)
+    if match:
+        ip = match.group(1)
+        return ip
+    else:
+        return None
+def get_power_data(ip):
+    try:
+        url = f"http://{ip}:{PORT}/battery"
+        resp = requests.get(url, timeout=3)
+
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+                
+                # 【已修正】使用您服務實際回傳的鍵名: 'powerMW', 'voltageV', 'currentMA'
+                power = data.get('powerMW')
+                voltage = data.get('voltageV') 
+                current = data.get('currentMA')
+
+                if power is not None and voltage is not None and current is not None:
+                    return {
+                        'power_mW': power,
+                        'voltage_V': voltage, 
+                        'current_mA': current
+                    }
+                else:
+                    return None
+
+            except json.JSONDecodeError:
+                return None
+        else:
+            return None
+            
+    except requests.exceptions.RequestException as e:
+        print(f"⚠️ 無法連線至 {ip}:{PORT}。錯誤: {e}")
+        return None
+def uninstall_service():
+    run(f"adb uninstall {PACKAGE_NAME}")
 def get_mem_usage():
     output = run_adb_command(["shell", "cat", "/proc/meminfo"])
     mem = {}
@@ -205,33 +270,16 @@ def get_mem_usage():
     total = mem.get("MemTotal", 1)
     available = mem.get("MemAvailable", 0)
     return (total - available) / total * 100
-_last_charge = None
-_last_time = None
-def get_power_info():
-    global _last_charge, _last_time
+def check_adb_connection():
+    # 執行 adb get-state，如果設備正常連線，會返回 'device'
+    try:
+        output = run("adb get-state").strip()
+        if output == "device":
+            return True
+        else:
+            return False
+    except subprocess.CalledProcessError:
+        return False
 
-    output = run_adb_command(["shell", "dumpsys", "battery"])
-    voltage = 0
-    charge = 0
-    for line in output.splitlines():
-        line = line.strip()
-        if line.startswith("voltage:"):
-            voltage = int(line.split(":")[1].strip()) / 1000  # mV to V
-        elif line.startswith("Charge counter:"):
-            charge = int(line.split(":")[1].strip()) / 1000   # µAh to mAh
-
-    now = time.time()
-
-    if _last_charge is not None and _last_time is not None:
-        delta_charge = charge - _last_charge  # mAh
-        delta_time = (now - _last_time) / 3600  # 小時
-        power = 0
-        if delta_time > 0:
-            power = abs(delta_charge / delta_time) * voltage  # W
-    else:
-        power = 0
-
-    _last_charge = charge
-    _last_time = now
-    return round(voltage, 2), round(charge, 2), round(power, 3)
-
+if __name__ == '__main__':  
+   print (get_device_name())
