@@ -69,15 +69,24 @@ def get_foreground_app():
     return ""
 
 def get_surfaceflinger_target_layer(package):
+    """
+    從 'adb shell dumpsys SurfaceFlinger --list' 的輸出中，
+    找到指定 package 的最後一個 SurfaceView layer。
+    此函式可以處理 layer 名稱前面包含可選十六進位前綴的情況。
+    """
     output = run_adb_command(["shell", "dumpsys", "SurfaceFlinger", "--list"])
-    pattern = rf"SurfaceView\[{re.escape(package)}/[^\]]+\]\(BLAST\)#\d+"
+    
+    pattern = rf"(?:[0-9a-fA-F]+\s+)?SurfaceView\[{re.escape(package)}/[^\]]+\]\(BLAST\)#\d+"
 
     matches = []
     for line in output.splitlines():
         match = re.search(pattern, line)
         if match:
-            matches.append(match.group())
+            # match.group() 會返回整個匹配到的字串
+            # 無論是 "SurfaceView[...]" 或是 "2c9183a  SurfaceView[...]"
+            matches.append(match.group().strip()) # 使用 strip() 去除前後多餘的空白
 
+    # 返回最後一個匹配項，如果沒有則返回空字串
     return matches[-1] if matches else ""
 
 
@@ -90,22 +99,35 @@ def get_refresh_rate():
     return 60.0  # fallback 預設為 60Hz
 
 def calculate_jank_by_vsync_triplets(triplets, refresh_period_ns):
+
     jank_count = 0
     big_jank_count = 0
 
-    # 提取 c 值（显示时间）
     display_timestamps = [t[2] for t in triplets if len(t) == 3 and t[2] > 0]
 
-    if len(display_timestamps) < 2:
+    if len(display_timestamps) < 4:
         return 0, 0
 
-    for i in range(1, len(display_timestamps)):
-        interval = display_timestamps[i] - display_timestamps[i - 1]
-        dropped_frames = int(round(interval / refresh_period_ns)) - 1
-        if dropped_frames > 6.66:
+    JANK_THRESHOLD_NS = (1000 / 60 * 2) * 1_000_000  # 83.33ms
+    BIG_JANK_THRESHOLD_NS = (1000 / 60 * 3) * 1_000_000  # 125ms
+
+    for i in range(3, len(display_timestamps)):
+        current_frame_time = display_timestamps[i] - display_timestamps[i - 1]
+        
+        prev_frame_times = [
+            display_timestamps[i - 1] - display_timestamps[i - 2],
+            display_timestamps[i - 2] - display_timestamps[i - 3],
+            display_timestamps[i - 3] - display_timestamps[i - 4]
+        ]
+        avg_prev_three_frames = sum(prev_frame_times) / 3
+        condition1_jank = current_frame_time > (avg_prev_three_frames * 2)
+        condition2_jank = current_frame_time > JANK_THRESHOLD_NS
+        
+        if condition1_jank and condition2_jank:
             jank_count += 1
-        if dropped_frames >= 8:
-            big_jank_count += 1
+            condition2_big_jank = current_frame_time > BIG_JANK_THRESHOLD_NS
+            if condition1_jank and condition2_big_jank:
+                big_jank_count += 1
 
     return jank_count, big_jank_count
 
@@ -127,6 +149,7 @@ def dump_layer_stats(layer_name):
 
 def get_fps(package):
     layer_name = get_surfaceflinger_target_layer(package)
+    # print(layer_name)
     if not layer_name:
         return -1
     L = dump_layer_stats(layer_name)
@@ -183,6 +206,32 @@ def get_cpu_usage_and_freq():
         idx += 1
 
     return usages, freqs
+def GPU_Usage():
+    # 1. 執行 adb 指令讀取 gpubusy 檔案
+    output = run_adb_command(["shell", "cat", "/sys/class/kgsl/kgsl-3d0/gpubusy"])
+    
+    if not output:
+        return 0.0
+
+    try:
+        # 3. 將輸出的字串分割成兩個部分
+        parts = output.split()
+        
+        if len(parts) == 2:
+            busy_cycles = int(parts[0])
+            total_cycles = int(parts[1])
+            
+            if total_cycles == 0:
+                return 0.0
+            
+            usage = (busy_cycles / total_cycles) * 100
+            return usage
+            
+    except (ValueError, IndexError):
+        # 如果輸出格式不對 (例如不是數字)，則返回 0
+        return 0.0
+        
+    return 0.0
 def get_battery_temp():
     output =run("adb shell dumpsys battery | grep temperature")
     match = re.search(r':\s*(\d+)', output)
@@ -202,7 +251,6 @@ def get_battery_temp():
         # 如果沒有找到匹配的 "temperature: <數字>" 模式，則返回 0
         return 0
 def install_and_start_service():
-    print("[*] 正在安裝手機端服務...")
     try:
         # 1. 先嘗試安裝/更新
         run(f'adb install -r "{APK_PATH}"') 
@@ -271,7 +319,7 @@ def get_mem_usage():
     available = mem.get("MemAvailable", 0)
     return (total - available) / total * 100
 def check_adb_connection():
-    # 執行 adb get-state，如果設備正常連線，會返回 'device'
+    
     try:
         output = run("adb get-state").strip()
         if output == "device":
@@ -282,4 +330,5 @@ def check_adb_connection():
         return False
 
 if __name__ == '__main__':  
-   print (get_device_name())
+#    print (get_device_name())
+    pass
