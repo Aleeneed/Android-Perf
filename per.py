@@ -4,19 +4,42 @@ import time
 from subprocess import Popen, PIPE
 import requests
 import json
-
+import os
 # ========== ADB Utility Functions ==========
 CREATE_NO_WINDOW = 0x08000000
 APK_PATH = "./app-debug.apk"  
 PACKAGE_NAME = "com.example.batteryapi"
 SERVICE_CLASS = "com.example.batteryapi/com.example.batteryapi.BatteryService"
 PORT = 8080
+# 1. 尝试从环境变量中获取（如果用户设置了）
+ADB_EXEC = os.environ.get("ADB_EXEC_PATH")
+
+# 2. 如果未设置，则假设 adb.exe 位于当前目录或 PATH 中（用于开发环境）
+# **注意：当打包成 .exe 后，这仍可能失败，建议用户将 adb.exe 放在 .exe 旁边**
+if not ADB_EXEC:
+    # 在打包环境下，sys.executable 是 .exe 本身
+    # 我们假设 adb.exe 与 .exe 位于同一目录下
+    # 如果 adb.exe 在 PATH 中，则直接使用 "adb"
+    ADB_EXEC = "adb"
 def run(cmd):
     return subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode("utf-8", errors="ignore")
 def run_adb_command(cmd):
     try:
-        result = subprocess.run(["adb"] + cmd, capture_output=True, text=True, encoding="utf-8", timeout=5,creationflags=CREATE_NO_WINDOW)
-        return result.stdout.strip() if result.returncode == 0 else ""
+        # 将 ADB_EXEC 加入命令列表头部
+        full_cmd = [ADB_EXEC] + cmd 
+        result = subprocess.run(full_cmd, capture_output=True, text=True, encoding="utf-8", timeout=5, creationflags=CREATE_NO_WINDOW)
+        
+        # 即使 returncode != 0，也返回 stderr/stdout 以便调试
+        if result.returncode == 0:
+             return result.stdout.strip()
+        else:
+             # 返回错误信息，以便调用者检查
+             return f"ERROR_CODE:{result.returncode}::{result.stderr.strip() or result.stdout.strip()}"
+
+    except FileNotFoundError:
+        print(f"\n❌ [严重错误] 找不到 ADB 可执行文件！请确认 ADB_EXEC 变量设置正确：{ADB_EXEC}")
+        print("这通常是打包成 .exe 后发生的问题。请确保 adb.exe 位于 PATH 中或已指定绝对路径。")
+        return "ADB_NOT_FOUND" # 统一返回一个特殊的错误标志
     except Exception:
         return ""
 def get_device_name():
@@ -97,6 +120,61 @@ def get_refresh_rate():
     if match:
         return float(match.group(1))
     return 60.0  # fallback 預設為 60Hz
+
+def get_vsync_triplets(layer_name):
+    """
+    获取指定 layer 的 VSync triplets 数据
+    直接复用 dump_layer_stats 的逻辑，但返回完整的 triplets
+    返回格式: [(a, b, c), (a, b, c), ...]
+    """
+    if not layer_name:
+        return []
+    
+    # 使用与 dump_layer_stats 相同的命令格式
+    cmd = f'adb shell dumpsys SurfaceFlinger --latency \\"{layer_name}\\"'
+    
+    try:
+        p = Popen(cmd, shell=True, stdout=PIPE, stderr=PIPE, 
+                  universal_newlines=True, creationflags=CREATE_NO_WINDOW)
+        
+        triplets = []
+        line_count = 0
+        
+        for line in p.stdout:
+            line_count += 1
+            line = line.strip()
+            
+            if line == '':
+                continue
+            
+            # 第一行是刷新周期，跳过
+            if line_count == 1:
+                continue
+            
+            parts = line.split('\t')
+            
+            try:
+                if len(parts) >= 3:
+                    a = int(parts[0])
+                    b = int(parts[1])
+                    c = int(parts[2])
+                    
+                    # 过滤无效数据（与原 dump_layer_stats 逻辑一致）
+                    if b < 9223372036854775807 and b != 0:
+                        triplets.append((a, b, c))
+                        
+                        # 打印前几个样本用于调试
+            except (ValueError, IndexError) as e:
+                if line_count <= 5:
+                    print(f"[DEBUG] Failed to parse line {line_count}: '{line}', error: {e}")
+                pass        
+        return triplets
+        
+    except Exception as e:
+        print(f"[ERROR] get_vsync_triplets failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
 
 def calculate_jank_by_vsync_triplets(triplets, refresh_period_ns):
 
@@ -251,22 +329,56 @@ def get_battery_temp():
         # 如果沒有找到匹配的 "temperature: <數字>" 模式，則返回 0
         return 0
 def install_and_start_service():
+    # 注意：这里的 adb install/uninstall 命令字符串中含有空格和引号，
+    # run 函数中使用 shell=True 是合适的，但我们需要确保 ADB_EXEC 在 PATH 中
+    # 或者用绝对路径替换 'adb'
+    
+    adb_exec_cmd = ADB_EXEC if ADB_EXEC != "adb" else "adb" # 确保 cmd 字符串中是 adb
+    
+    # 转换为使用绝对路径的命令字符串
+    install_cmd = f'{adb_exec_cmd} install -r "{APK_PATH}"'
+    uninstall_cmd = f'{adb_exec_cmd} uninstall {PACKAGE_NAME}'
+    start_cmd = f"{adb_exec_cmd} shell am start-foreground-service -n {SERVICE_CLASS}"
+    
     try:
-        # 1. 先嘗試安裝/更新
-        run(f'adb install -r "{APK_PATH}"') 
+        # 1. 先尝试安装/更新 (注意：如果 adb 找不到，这里会失败)
+        run(install_cmd) 
+        print(f"✅ 应用 {PACKAGE_NAME} 安装/更新成功。")
     except subprocess.CalledProcessError as e:
-        # 2. 如果安裝失敗，嘗試先卸載再安裝
-        run(f"adb uninstall {PACKAGE_NAME}")
-        run(f'adb install "{APK_PATH}"')
+        print(f"⚠️ 第一次安装失败 (可能已安装或版本冲突)，尝试卸载后重新安装...")
+        
+        # 2. 如果第一次安装失败，尝试先卸载再安装
+        try:
+            # 卸载操作。设置 check=False 容忍卸载失败 (例如：应用未安装)
+            subprocess.run(uninstall_cmd, shell=True, check=False, creationflags=CREATE_NO_WINDOW, 
+                           stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+            
+            # 再次尝试安装
+            run(f'{adb_exec_cmd} install "{APK_PATH}"')
+            print(f"✅ 卸载后，应用 {PACKAGE_NAME} 重新安装成功。")
 
-    # 3. 確保使用 start-foreground-service 啟動，以避免 Android 8.0+ 的限制
-    start_cmd = f"adb shell am start-foreground-service -n {SERVICE_CLASS}"
+        except subprocess.CalledProcessError as e2:
+            # 这里的 CalledProcessError 可能是第二次安装失败，需要打印输出
+            print(f"❌ 卸载/再次安装失败，错误信息：\n{e2.output}")
+            raise # 再次安装失败是严重错误，重新抛出
+        except FileNotFoundError:
+            # 这里的 FileNotFoundError 意味着 ADB_EXEC 路径不对
+            print(f"❌ [严重错误] 在异常处理块中仍找不到 ADB ({adb_exec_cmd})。请检查路径。")
+            raise
+    except FileNotFoundError:
+        # 捕获外部 adb 命令找不到的错误
+        print(f"❌ [严重错误] 找不到 ADB ({adb_exec_cmd})。请检查 ADB_EXEC 路径。")
+        raise
+        
+
+    # 3. 启动服务
     try:
+        # 启动命令
         run(start_cmd)
-        print("✅ 服務啟動成功")
+        print("✅ 远端服务启动成功")
     except subprocess.CalledProcessError as e:
-        # 啟動失敗通常是 Manifest 或代碼問題，這裡列出錯誤訊息
-        print(e.output)
+        # 启动失败通常是 Manifest 或代碼问题
+        print(f"❌ 服务启动失败，错误信息：\n{e.output}")
 def get_device_ip():
     output = run("adb shell ip addr show wlan0")
     match = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", output)
@@ -307,7 +419,12 @@ def get_power_data(ip):
         print(f"⚠️ 無法連線至 {ip}:{PORT}。錯誤: {e}")
         return None
 def uninstall_service():
-    run(f"adb uninstall {PACKAGE_NAME}")
+    # 使用 check=False 容忍卸载失败（应用可能未安装）
+    adb_exec_cmd = ADB_EXEC if ADB_EXEC != "adb" else "adb"
+    subprocess.run(f"{adb_exec_cmd} uninstall {PACKAGE_NAME}", 
+                   shell=True, check=False, 
+                   creationflags=CREATE_NO_WINDOW)
+    print(f"✅ 尝试卸载 {PACKAGE_NAME} 完毕。")
 def get_mem_usage():
     output = run_adb_command(["shell", "cat", "/proc/meminfo"])
     mem = {}
@@ -319,14 +436,20 @@ def get_mem_usage():
     available = mem.get("MemAvailable", 0)
     return (total - available) / total * 100
 def check_adb_connection():
-    
     try:
-        output = run("adb get-state").strip()
+        # 使用 run_adb_command
+        output = run_adb_command(["get-state"]).strip()
+        
+        if output.startswith("ERROR_CODE") or output == "ADB_NOT_FOUND":
+            return False
+        
+        # 如果 adb get-state 返回 device，则连接正常
         if output == "device":
             return True
         else:
             return False
-    except subprocess.CalledProcessError:
+    except:
+        # 捕获所有其他潜在错误
         return False
 
 if __name__ == '__main__':  
