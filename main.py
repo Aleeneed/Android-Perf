@@ -11,8 +11,6 @@ from PyQt5.QtChart import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QPointF
 from PyQt5.QtGui import QPainter, QColor
 
-# It's assumed a 'per' module exists with the necessary functions.
-# Since it's not provided, a mock will be used for demonstration if run directly.
 try:
     import per
 except ImportError:
@@ -22,13 +20,14 @@ except ImportError:
         def get_fps(self, app): return 60 * (0.9 + 0.1 * math.sin(time.time()))
         def get_cpu_usage_and_freq(self):
             t = time.time()
-            # Simulate initial zero values for the first 0.1 seconds
+            # 模擬初始延遲
             if not hasattr(self, 'start_time'):
                 self.start_time = t
+            # 這裡改成模擬 9 核心 (如 Pixel 8) 來測試自動擴充機制
             if t - self.start_time < 0.1:
-                 return [0]*8, [0]*8
-            usages = [50 + 40 * math.sin(t + i) for i in range(8)]
-            freqs = [1500 + 1000 * math.sin(t + i) for i in range(8)]
+                 return [0]*9, [0]*9
+            usages = [50 + 40 * math.sin(t + i) for i in range(9)]
+            freqs = [1500 + 1000 * math.sin(t + i) for i in range(9)]
             return usages, freqs
         def GPU_Usage(self): return 45 + 20 * math.sin(time.time() * 0.5)
         def get_battery_temp(self): return 35 + 5 * math.sin(time.time() * 0.2)
@@ -41,7 +40,6 @@ except ImportError:
             return {'power_mW': power, 'voltage_V': voltage, 'current_mA': current}
         def get_refresh_rate(self): return 120.0
         def get_surfaceflinger_target_layer(self, target): 
-            # Mock triplets data
             import random
             triplets = []
             base_time = time.time_ns()
@@ -49,7 +47,7 @@ except ImportError:
                 triplets.append((i, base_time + i * 16_666_666, base_time + i * 16_666_666 + random.randint(0, 50_000_000)))
             return triplets
         def calculate_jank_by_vsync_triplets(self, triplets, period): return (int(time.time()) % 5, int(time.time()) % 2)
-        def get_device_name(self): return "Mock Device"
+        def get_device_name(self): return "Mock Device (9-Core)"
         def get_device_ip(self): return "192.168.1.100"
         def enable_wifi_debug(self): return "192.168.1.100"
         def install_and_start_service(self): print("Mock: Installing service.")
@@ -59,9 +57,9 @@ except ImportError:
 
 
 MAX_POINTS = 2000
-UI_UPDATE_INTERVAL = 100  # UI 更新频率 100ms，更流畅
-DATA_COLLECTION_INTERVAL = 500  # 数据采集间隔改为 500ms
-DATA_LOG_INTERVAL = 1.0  # 数据记录到 log 的间隔 1 秒
+UI_UPDATE_INTERVAL = 100  
+DATA_COLLECTION_INTERVAL = 500  
+DATA_LOG_INTERVAL = 1.0  
 
 class DataThread(QThread):
     data_ready = pyqtSignal(dict)
@@ -70,9 +68,7 @@ class DataThread(QThread):
         super().__init__()
         self.interval = interval_ms / 1000.0
         self.running = True
-        self.last_triplets = []  # 缓存上次的 triplets
-        
-        # 缓存上次的数据，避免某些数据获取失败时显示空白
+        self.last_triplets = []  
         self.last_data = {
             'device': '',
             'ip': '',
@@ -82,60 +78,42 @@ class DataThread(QThread):
     def run(self):
         frame_count = 0
         last_triplet_time = 0
-        last_slow_data_time = 0  # 用于控制慢速数据获取
+        last_slow_data_time = 0 
         
         while self.running:
             loop_start_time = time.time()
-            
             try:
                 info = {}
-                
-                # === 快速数据：每次都获取 ===
-                # CPU 使用率和频率 - 相对快速
+                # 獲取 CPU 使用率和頻率 (動態長度)
                 usages, freqs = per.get_cpu_usage_and_freq()
                 info['usages'] = usages
                 info['freqs'] = freqs
                 
-                # === 慢速数据：每 2 秒获取一次 ===
                 current_time = time.time()
                 if current_time - last_slow_data_time >= 2.0:
                     last_slow_data_time = current_time
-                    
-                    # 这些命令较慢，降低频率
                     try:
                         foreground_app = per.get_foreground_app()
                         self.last_data['foreground_app'] = foreground_app
-                        
-                        # FPS - 较慢
                         fps = per.get_fps(foreground_app)
-                        if fps >= 0:  # 只有有效值才更新
-                            self.last_data['fps'] = fps
-                        
-                        # GPU、温度、内存
+                        if fps >= 0: self.last_data['fps'] = fps
                         self.last_data['gpu'] = per.GPU_Usage()
                         self.last_data['temp'] = per.get_battery_temp()
                         self.last_data['mem'] = per.get_mem_usage()
                         
-                        # 电源数据
                         power_info = per.get_power_data(per.get_device_ip())
-                        if power_info:
-                            self.last_data['power_info'] = power_info
+                        if power_info: self.last_data['power_info'] = power_info
                         
-                        # 刷新率（很少变化）
                         refresh_rate = per.get_refresh_rate()
-                        if refresh_rate > 0:
-                            self.last_data['refresh_rate'] = refresh_rate
+                        if refresh_rate > 0: self.last_data['refresh_rate'] = refresh_rate
                         
-                        # 设备信息（基本不变）
-                        if not self.last_data.get('device'):
-                            self.last_data['device'] = per.get_device_name()
-                        if not self.last_data.get('ip'):
-                            self.last_data['ip'] = per.get_device_ip() if hasattr(per, 'get_device_ip') else None
+                        if not self.last_data.get('device'): self.last_data['device'] = per.get_device_name()
+                        if not self.last_data.get('ip'): self.last_data['ip'] = per.get_device_ip() if hasattr(per, 'get_device_ip') else None
                             
                     except Exception as e:
                         print(f"[DataThread] Slow data error: {e}")
                 
-                # 使用缓存的数据
+                # 使用緩存的數據
                 info['fps'] = self.last_data.get('fps', 0.0)
                 info['gpu'] = self.last_data.get('gpu', 0.0)
                 info['temp'] = self.last_data.get('temp', 0.0)
@@ -145,21 +123,17 @@ class DataThread(QThread):
                 info['device'] = self.last_data.get('device', '')
                 info['ip'] = self.last_data.get('ip', None)
                 
-                # === Jank 计算：每 2 秒一次 ===
+                # Jank 計算
                 jank_count = 0
                 big_jank_count = 0
-                
                 if current_time - last_triplet_time >= 2.0:
                     last_triplet_time = current_time
-                    
                     try:
                         foreground_app = self.last_data.get('foreground_app', '')
                         if foreground_app:
                             layer_name = per.get_surfaceflinger_target_layer(foreground_app)
-                            
                             if layer_name and hasattr(per, 'get_vsync_triplets'):
                                 current_triplets = per.get_vsync_triplets(layer_name)
-                                
                                 if current_triplets and len(current_triplets) > 0:
                                     new_triplets = current_triplets
                                     if self.last_triplets and len(self.last_triplets) > 0:
@@ -171,15 +145,12 @@ class DataThread(QThread):
                                         jank_count, big_jank_count = per.calculate_jank_by_vsync_triplets(
                                             new_triplets, refresh_period_ns
                                         )
-                                    
                                     self.last_triplets = current_triplets[-50:]
                     except Exception as e:
-                        if frame_count % 20 == 0:
-                            print(f"[DataThread] Jank error: {e}")
+                        if frame_count % 20 == 0: print(f"[DataThread] Jank error: {e}")
                 
                 info['jank'] = jank_count
                 info['big_jank'] = big_jank_count
-                
                 frame_count += 1
                 
             except Exception as e:
@@ -187,11 +158,8 @@ class DataThread(QThread):
                 info = {'error': str(e)}
             
             self.data_ready.emit(info)
-            
-            # 精确的时间控制
             elapsed = time.time() - loop_start_time
             sleep_time = max(0, self.interval - elapsed)
-            
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
@@ -203,46 +171,51 @@ class DataThread(QThread):
 class MonitorWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Arrow")
+        self.setWindowTitle("Android Perf")
         self.resize(1400, 800)
 
         self.metric_titles = ["FPS", "Temp", "Mem", "GPU", "Power"]
         self.metric_deques = [deque(maxlen=MAX_POINTS) for _ in self.metric_titles]
-
         self.power_deques = {
             'power': self.metric_deques[self.metric_titles.index("Power")],
             'voltage': deque(maxlen=MAX_POINTS),
             'current': deque(maxlen=MAX_POINTS),
         }
 
-        self.cpu_usage_deques = [deque(maxlen=MAX_POINTS) for _ in range(8)]
-        self.cpu_freq_deques = [deque(maxlen=MAX_POINTS) for _ in range(8)]
-
-        self.metric_series = []
-        self.power_series = {}
-        self.power_axes = {}
-
-        self.metric_labels = []
-        self.power_labels = {}
-
+        # 動態核心支援相關變數
+        self.core_count = 0
+        self.cpu_usage_deques = []
+        self.cpu_freq_deques = []
         self.cpu_usage_series = []
         self.cpu_freq_series = []
         self.cpu_usage_labels = []
         self.cpu_freq_labels = []
 
+        self.metric_series = []
+        self.power_series = {}
+        self.power_axes = {}
+        self.metric_labels = []
+        self.power_labels = {}
+
         self.data_log = []
         self.data_thread = None
         self.start_time = time.time()
         self.is_monitoring = False
-        self.has_logged_data = False # Flag to prevent logging initial zero values
+        self.has_logged_data = False 
         
-        # 累积 Jank 计数
         self.total_jank_count = 0
         self.total_big_jank_count = 0
-        
-        # 数据记录控制
         self.last_log_time = 0
-        self.accumulated_data = {
+        self.accumulated_data = self.reset_accumulated_data()
+
+        self.ui_timer = QTimer(self)
+        self.ui_timer.setInterval(UI_UPDATE_INTERVAL)
+        self.ui_timer.timeout.connect(self.update_display)
+
+        self.init_ui()
+
+    def reset_accumulated_data(self):
+        return {
             'fps_sum': 0, 'fps_count': 0,
             'temp_sum': 0, 'temp_count': 0,
             'mem_sum': 0, 'mem_count': 0,
@@ -251,15 +224,9 @@ class MonitorWindow(QMainWindow):
             'voltage_sum': 0, 'voltage_count': 0,
             'current_sum': 0, 'current_count': 0,
             'jank_sum': 0, 'big_jank_sum': 0,
-            'cpu_usages': [[] for _ in range(8)],
-            'cpu_freqs': [[] for _ in range(8)]
+            'cpu_usages': [[] for _ in range(self.core_count)],
+            'cpu_freqs': [[] for _ in range(self.core_count)]
         }
-
-        self.ui_timer = QTimer(self)
-        self.ui_timer.setInterval(UI_UPDATE_INTERVAL)
-        self.ui_timer.timeout.connect(self.update_display)
-
-        self.init_ui()
 
     def create_label(self, text="0", color="white"):
         label = QLabel(text)
@@ -315,7 +282,6 @@ class MonitorWindow(QMainWindow):
         
         self.window_seconds = MAX_POINTS * DATA_COLLECTION_INTERVAL / 1000.0
 
-        # --- Metric Charts (FPS, Temp, Mem, GPU, Power) ---
         metric_layout = QHBoxLayout()
         for title in self.metric_titles:
             chart = QChart()
@@ -382,39 +348,72 @@ class MonitorWindow(QMainWindow):
 
         main_layout.addLayout(metric_layout)
 
-        # --- CPU Charts ---
+        # --- CPU Charts (Setup base layout, cores will be added dynamically) ---
         cpu_layout = QVBoxLayout()
+        
         # Usage Chart
-        usage_chart = QChart(); usage_chart.setTitle("CPU 使用率 (%)"); usage_chart.setAnimationOptions(QChart.NoAnimation)
-        axisX_u = QValueAxis(); axisX_u.setRange(0, self.window_seconds); axisX_u.setLabelFormat("%.0fs")
-        axisY_u = QValueAxis(); axisY_u.setRange(0, 100)
-        usage_chart.addAxis(axisX_u, Qt.AlignBottom); usage_chart.addAxis(axisY_u, Qt.AlignLeft)
-        for i in range(8):
-            s = QLineSeries(name=f"CPU{i}")
-            usage_chart.addSeries(s); s.attachAxis(axisX_u); s.attachAxis(axisY_u)
-            self.cpu_usage_series.append((s, axisY_u, axisX_u))
-            self.cpu_usage_labels.append(self.create_label())
-        usage_view = QChartView(usage_chart); usage_view.setRenderHint(QPainter.Antialiasing, False); usage_view.setMinimumHeight(220)
+        self.usage_chart = QChart(); self.usage_chart.setTitle("CPU 使用率 (%)"); self.usage_chart.setAnimationOptions(QChart.NoAnimation)
+        self.axisX_u = QValueAxis(); self.axisX_u.setRange(0, self.window_seconds); self.axisX_u.setLabelFormat("%.0fs")
+        self.axisY_u = QValueAxis(); self.axisY_u.setRange(0, 100)
+        self.usage_chart.addAxis(self.axisX_u, Qt.AlignBottom); self.usage_chart.addAxis(self.axisY_u, Qt.AlignLeft)
+        
+        usage_view = QChartView(self.usage_chart); usage_view.setRenderHint(QPainter.Antialiasing, False); usage_view.setMinimumHeight(220)
         usage_box = QHBoxLayout(); usage_box.addWidget(usage_view)
-        usage_label_col = QVBoxLayout(); [usage_label_col.addWidget(lbl) for lbl in self.cpu_usage_labels]; usage_box.addLayout(usage_label_col)
+        self.usage_label_col = QVBoxLayout()
+        usage_box.addLayout(self.usage_label_col)
         cpu_layout.addLayout(usage_box)
         
         # Freq Chart
-        freq_chart = QChart(); freq_chart.setTitle("CPU 頻率 (MHz)"); freq_chart.setAnimationOptions(QChart.NoAnimation)
-        axisX_f = QValueAxis(); axisX_f.setRange(0, self.window_seconds); axisX_f.setLabelFormat("%.0fs")
-        axisY_f = QValueAxis(); axisY_f.setRange(0, 3000)
-        freq_chart.addAxis(axisX_f, Qt.AlignBottom); freq_chart.addAxis(axisY_f, Qt.AlignLeft)
-        for i in range(8):
-            s = QLineSeries(name=f"Core{i}")
-            freq_chart.addSeries(s); s.attachAxis(axisX_f); s.attachAxis(axisY_f)
-            self.cpu_freq_series.append((s, axisY_f, axisX_f))
-            self.cpu_freq_labels.append(self.create_label())
-        freq_view = QChartView(freq_chart); freq_view.setRenderHint(QPainter.Antialiasing, False); freq_view.setMinimumHeight(220)
+        self.freq_chart = QChart(); self.freq_chart.setTitle("CPU 頻率 (MHz)"); self.freq_chart.setAnimationOptions(QChart.NoAnimation)
+        self.axisX_f = QValueAxis(); self.axisX_f.setRange(0, self.window_seconds); self.axisX_f.setLabelFormat("%.0fs")
+        self.axisY_f = QValueAxis(); self.axisY_f.setRange(0, 3000)
+        self.freq_chart.addAxis(self.axisX_f, Qt.AlignBottom); self.freq_chart.addAxis(self.axisY_f, Qt.AlignLeft)
+        
+        freq_view = QChartView(self.freq_chart); freq_view.setRenderHint(QPainter.Antialiasing, False); freq_view.setMinimumHeight(220)
         freq_box = QHBoxLayout(); freq_box.addWidget(freq_view)
-        freq_label_col = QVBoxLayout(); [freq_label_col.addWidget(lbl) for lbl in self.cpu_freq_labels]; freq_box.addLayout(freq_label_col)
+        self.freq_label_col = QVBoxLayout()
+        freq_box.addLayout(self.freq_label_col)
         cpu_layout.addLayout(freq_box)
 
         main_layout.addLayout(cpu_layout)
+        
+        # 預設產生 8 個核心圖表介面
+        self.adjust_core_count(8)
+
+    def adjust_core_count(self, target_cores):
+        """動態擴充 UI 以符合當前 CPU 的真實核心數量"""
+        while self.core_count < target_cores:
+            i = self.core_count
+            
+            # 1. 擴充資料佇列與統計結構
+            self.cpu_usage_deques.append(deque(maxlen=MAX_POINTS))
+            self.cpu_freq_deques.append(deque(maxlen=MAX_POINTS))
+            self.accumulated_data['cpu_usages'].append([])
+            self.accumulated_data['cpu_freqs'].append([])
+            
+            # 2. 增加 CPU Usage 系列與標籤
+            s_u = QLineSeries(name=f"CPU{i}")
+            self.usage_chart.addSeries(s_u)
+            s_u.attachAxis(self.axisX_u)
+            s_u.attachAxis(self.axisY_u)
+            self.cpu_usage_series.append((s_u, self.axisY_u, self.axisX_u))
+            
+            lbl_u = self.create_label()
+            self.cpu_usage_labels.append(lbl_u)
+            self.usage_label_col.addWidget(lbl_u)
+            
+            # 3. 增加 CPU Freq 系列與標籤
+            s_f = QLineSeries(name=f"Core{i}")
+            self.freq_chart.addSeries(s_f)
+            s_f.attachAxis(self.axisX_f)
+            s_f.attachAxis(self.axisY_f)
+            self.cpu_freq_series.append((s_f, self.axisY_f, self.axisX_f))
+            
+            lbl_f = self.create_label()
+            self.cpu_freq_labels.append(lbl_f)
+            self.freq_label_col.addWidget(lbl_f)
+            
+            self.core_count += 1
 
     def enable_wifi(self):
         ip = per.enable_wifi_debug()
@@ -434,24 +433,11 @@ class MonitorWindow(QMainWindow):
             return
         
         self.is_monitoring = True
-        self.has_logged_data = False # 重置日誌標記
-        self.total_jank_count = 0  # 重置累积 Jank 计数
-        self.total_big_jank_count = 0  # 重置累积 Big Jank 计数
-        self.last_log_time = time.time()  # 重置记录时间
-        
-        # 重置累积数据
-        self.accumulated_data = {
-            'fps_sum': 0, 'fps_count': 0,
-            'temp_sum': 0, 'temp_count': 0,
-            'mem_sum': 0, 'mem_count': 0,
-            'gpu_sum': 0, 'gpu_count': 0,
-            'power_sum': 0, 'power_count': 0,
-            'voltage_sum': 0, 'voltage_count': 0,
-            'current_sum': 0, 'current_count': 0,
-            'jank_sum': 0, 'big_jank_sum': 0,
-            'cpu_usages': [[] for _ in range(8)],
-            'cpu_freqs': [[] for _ in range(8)]
-        }
+        self.has_logged_data = False
+        self.total_jank_count = 0 
+        self.total_big_jank_count = 0 
+        self.last_log_time = time.time() 
+        self.accumulated_data = self.reset_accumulated_data()
         
         self.package_combo.clear(); self.package_combo.addItem(current_package)
         if self.data_thread:
@@ -461,6 +447,7 @@ class MonitorWindow(QMainWindow):
         for dq in self.power_deques.values(): dq.clear()
         for dq in self.cpu_usage_deques: dq.clear()
         for dq in self.cpu_freq_deques: dq.clear()
+        
         self.start_time = time.time()
         self.last_log_time = self.start_time
         
@@ -484,8 +471,6 @@ class MonitorWindow(QMainWindow):
         if 'error' in info:
             print(f"[MonitorWindow] data error: {info['error']}")
             return
-        
-        # === 使用单调递增的时间，避免时间跳跃 ===
         current_time = time.time()
         elapsed_seconds = current_time - self.start_time
         
@@ -500,15 +485,12 @@ class MonitorWindow(QMainWindow):
         voltageV = float(power_info.get('voltage_V', 0) or 0)
         current_mA = abs(float(power_info.get('current_mA', 0) or 0))
         
-        # === 修正 Jank 显示 - 累积计数 ===
         jank_increment = info.get('jank', 0)
         big_jank_increment = info.get('big_jank', 0)
         
-        # 累加到总计数
         self.total_jank_count += jank_increment
         self.total_big_jank_count += big_jank_increment
         
-        # 立即更新监控时间标签（使用实际经过的时间）
         h = int(elapsed_seconds // 3600)
         m = int((elapsed_seconds % 3600) // 60)
         s = int(elapsed_seconds % 60)
@@ -524,6 +506,14 @@ class MonitorWindow(QMainWindow):
         self.jank_label.setText(f"Jank: {self.total_jank_count}")
         self.big_jank_label.setText(f"Big Jank: {self.total_big_jank_count}")
 
+        # --- 處理 CPU 動態核心數 ---
+        usages = info.get('usages', [])
+        freqs = info.get('freqs', [])
+        
+        detected_cores = len(usages)
+        if detected_cores > self.core_count:
+            self.adjust_core_count(detected_cores)
+
         # --- Append data to deques (for charts) ---
         metrics = [fps, temp, mem, gpu]
         for i, v in enumerate(metrics):
@@ -533,18 +523,17 @@ class MonitorWindow(QMainWindow):
         self.power_deques['voltage'].append((elapsed_seconds, voltageV))
         self.power_deques['current'].append((elapsed_seconds, current_mA))
         
-        usages = info.get('usages', [0]*8)
-        freqs = info.get('freqs', [0]*8)
-        for i in range(8):
-            self.cpu_usage_deques[i].append((elapsed_seconds, float(usages[i] if i < len(usages) else 0.0)))
-            self.cpu_freq_deques[i].append((elapsed_seconds, float(freqs[i] if i < len(freqs) else 0.0)))
+        for i in range(self.core_count):
+            u_val = float(usages[i]) if i < len(usages) else 0.0
+            f_val = float(freqs[i]) if i < len(freqs) else 0.0
+            self.cpu_usage_deques[i].append((elapsed_seconds, u_val))
+            self.cpu_freq_deques[i].append((elapsed_seconds, f_val))
         
-        # === 优化数据记录：每秒记录一次平均值 ===
         if not self.has_logged_data and sum(usages) > 0:
             self.has_logged_data = True
         
         if self.has_logged_data:
-            # 累积数据
+            # 累積數據
             acc = self.accumulated_data
             acc['fps_sum'] += fps; acc['fps_count'] += 1
             acc['temp_sum'] += temp; acc['temp_count'] += 1
@@ -556,18 +545,18 @@ class MonitorWindow(QMainWindow):
             acc['jank_sum'] += jank_increment
             acc['big_jank_sum'] += big_jank_increment
             
-            for i in range(8):
+            for i in range(self.core_count):
                 if i < len(usages):
                     acc['cpu_usages'][i].append(usages[i])
                 if i < len(freqs):
                     acc['cpu_freqs'][i].append(freqs[i])
             
-            # 每秒写入一次数据
+            # 每秒寫入一次數據
             time_since_last_log = current_time - self.last_log_time
             if time_since_last_log >= DATA_LOG_INTERVAL:
                 now = time.strftime("%H:%M:%S")
                 
-                # 计算平均值
+                # 計算平均值
                 avg_fps = acc['fps_sum'] / max(acc['fps_count'], 1)
                 avg_temp = acc['temp_sum'] / max(acc['temp_count'], 1)
                 avg_mem = acc['mem_sum'] / max(acc['mem_count'], 1)
@@ -579,36 +568,24 @@ class MonitorWindow(QMainWindow):
                 # CPU 平均值
                 avg_cpu_usages = [
                     sum(acc['cpu_usages'][i]) / max(len(acc['cpu_usages'][i]), 1) 
-                    if acc['cpu_usages'][i] else 0.0
-                    for i in range(8)
+                    if i < len(acc['cpu_usages']) and acc['cpu_usages'][i] else 0.0
+                    for i in range(self.core_count)
                 ]
                 avg_cpu_freqs = [
                     sum(acc['cpu_freqs'][i]) / max(len(acc['cpu_freqs'][i]), 1) 
-                    if acc['cpu_freqs'][i] else 0.0
-                    for i in range(8)
+                    if i < len(acc['cpu_freqs']) and acc['cpu_freqs'][i] else 0.0
+                    for i in range(self.core_count)
                 ]
                 
-                # 写入日志（使用累积的 Jank 值）
+                # 寫入數據
                 self.data_log.append([
                     now, avg_fps, avg_temp, avg_mem, avg_gpu, 
                     avg_power, avg_voltage, avg_current,
                     acc['jank_sum'], acc['big_jank_sum']
                 ] + avg_cpu_usages + avg_cpu_freqs)
                 
-                # 重置累积数据
-                self.accumulated_data = {
-                    'fps_sum': 0, 'fps_count': 0,
-                    'temp_sum': 0, 'temp_count': 0,
-                    'mem_sum': 0, 'mem_count': 0,
-                    'gpu_sum': 0, 'gpu_count': 0,
-                    'power_sum': 0, 'power_count': 0,
-                    'voltage_sum': 0, 'voltage_count': 0,
-                    'current_sum': 0, 'current_count': 0,
-                    'jank_sum': 0, 'big_jank_sum': 0,
-                    'cpu_usages': [[] for _ in range(8)],
-                    'cpu_freqs': [[] for _ in range(8)]
-                }
-                # 更新 last_log_time，确保精确的 1 秒间隔
+                # 重置累積數據
+                self.accumulated_data = self.reset_accumulated_data()
                 self.last_log_time += DATA_LOG_INTERVAL
                 
                 # 如果累积了太多延迟（超过 2 秒），重新同步
@@ -620,12 +597,9 @@ class MonitorWindow(QMainWindow):
             return
         
         elapsed_seconds = self.metric_deques[0][-1][0]
-        
-        # 监控时间标签已在 on_data_ready 中更新，这里不再重复更新
-
         divisor, label_format = (60.0, "%.2fm") if elapsed_seconds > 60 else (1.0, "%.0fs")
 
-        # 1. Standard Metrics (FPS, Temp, Mem, GPU)
+        # 1. Standard Metrics
         for i, (series_obj, axisY, axisX) in enumerate(self.metric_series):
             dq = self.metric_deques[i]
             if not dq: continue
@@ -654,18 +628,17 @@ class MonitorWindow(QMainWindow):
             self.power_series['current'].replace(current_pts)
             self.power_labels['current'].setText(f"{current_pts[-1].y():.2f} mA")
             
-            # Update secondary Y-axis
             if voltage_pts and current_pts:
                  max_secondary = max(p.y() for p in voltage_pts + current_pts)
                  self.power_axes['secondary_y'].setRange(0, max(10.0, max_secondary * 1.2))
             
-            # Update shared X-axis
             xmax = power_pts[-1].x()
             self.power_axes['power_x'].setRange(max(0, xmax - (self.window_seconds/divisor)), xmax)
             self.power_axes['power_x'].setLabelFormat(label_format)
 
         def update_cpu_charts(series_list, deques, labels, unit):
             for i, (series_obj, axisY, axisX) in enumerate(series_list):
+                if i >= len(deques): continue # 避免擴充時索引不同步
                 dq = deques[i]
                 if not dq: continue
                 pts = [QPointF(px / divisor, py) for px, py in dq]
@@ -673,7 +646,6 @@ class MonitorWindow(QMainWindow):
                 if pts:
                     labels[i].setText(f"{pts[-1].y():.1f}{unit}")
                     maxy = max(p.y() for p in pts)
-                    # Set a reasonable default max Y value
                     default_max_y = 100 if '%' in unit else 2000 
                     axisY.setRange(0, max(default_max_y, maxy * 1.2))
                     xmax = pts[-1].x()
@@ -692,10 +664,11 @@ class MonitorWindow(QMainWindow):
         if path:
             with open(path, 'w', newline='', encoding="utf-8-sig") as f:
                 writer = csv.writer(f)
+                # 這裡的表頭也會自動根據當下的 core_count 擴展
                 header = ["Time", "FPS", "Temp", "Mem", "GPU(%)", "Power(mW)", "Voltage(V)", 
                           "Current(mA)", "Jank", "Big Jank"] + \
-                         [f"CPU{i}%" for i in range(8)] + \
-                         [f"Core{i}(MHz)" for i in range(8)]
+                         [f"CPU{i}%" for i in range(self.core_count)] + \
+                         [f"Core{i}(MHz)" for i in range(self.core_count)]
                 writer.writerow(header)
                 writer.writerows(self.data_log)
             QMessageBox.information(self, "導出成功", "CSV 檔案已儲存。")
@@ -703,7 +676,8 @@ class MonitorWindow(QMainWindow):
     def closeEvent(self, event):
         self.stop_monitoring()
         try:
-            per.run_adb_command(["disconnect"])
+            per.run("adb disconnect")
+            print( per.run("adb disconnect"))
             per.uninstall_service()
         except Exception as e:
             print(f"清理過程中發生例外: {e}")
