@@ -17,6 +17,7 @@ A high-performance real-time GUI monitoring tool built with Python (PyQt5) and t
   - [2. Android Device Developer Options Setup](#2-android-device-developer-options-setup-en)
   - [3. Install Python Environment & Dependencies](#3-install-python-environment--dependencies-en)
 - [Project Structure](#project-structure-en)
+- [Platform Support & Metric Limitations](#platform-support-en)
 - [Core Modules & Architecture](#core-modules--architecture-en)
 - [Usage Instructions](#usage-instructions-en)
   - [USB Monitoring Mode](#usb-monitoring-mode-en)
@@ -103,6 +104,20 @@ Ensure your project folder contains the following files. **Make sure `app-debug.
 └── README.md             # Project documentation
 ```
 
+<a name="platform-support-en"></a>
+### Platform Support & Metric Limitations
+
+| Metric | Support | Notes |
+| :--- | :--- | :--- |
+| **FPS** | **Android 12+ only** | Calculated from SurfaceFlinger VSync timing data. Android 11 and below are treated as unsupported. |
+| **GPU Usage** | **Qualcomm Snapdragon only** | Requires the Qualcomm KGSL interface, typically `/sys/class/kgsl/kgsl-3d0/gpubusy`. |
+| **Google Pixel GPU Usage** | **Not supported** | Pixel devices are explicitly excluded from GPU usage collection by this project. GPU is shown as `N/A`/unavailable. |
+| **CPU Usage/Frequency** | Device-dependent | Availability depends on the CPU sysfs interfaces exposed by the Android device. |
+| **RAM / Temperature** | Device-dependent | Depends on the Android device and exposed system interfaces. |
+| **Power / Voltage / Current** | Requires `app-debug.apk` | Collected through the bundled BatteryService APK. |
+
+**Important implementation rule:** the application should detect Android version, SoC/vendor, and GPU interface availability before starting metric collection. Unsupported metrics must be displayed as `N/A`/unavailable rather than being interpreted as `0%`.
+
 <a name="core-modules--architecture-en"></a>
 ### Core Modules & Architecture
 
@@ -180,6 +195,7 @@ After stopping a monitoring session, click **"Export CSV"**:
   - [2. Android 手機端開發者選項設定](#2-android-手機端開發者選項設定-zh)
   - [3. 安裝 Python 執行環境與相依套件](#3-安裝-python-執行環境與相依套件-zh)
 - [專案結構說明](#專案結構說明-zh)
+- [平台支援與數據限制](#平台支援與數據限制-zh)
 - [核心模組與功能解析](#核心模組與功能解析-zh)
 - [使用說明](#使用說明-zh)
   - [USB 監控模式](#usb-監控模式-zh)
@@ -266,6 +282,20 @@ pip install PyQt5 PyQtChart requests
 └── README.md             # 本說明文件
 ```
 
+<a name="平台支援與數據限制-zh"></a>
+### 平台支援與數據限制
+
+| 指標 | 支援狀態 | 說明 |
+| :--- | :--- | :--- |
+| **FPS** | **僅 Android 12+** | 透過 SurfaceFlinger VSync 時間資料計算。Android 11 以下視為不支援。 |
+| **GPU 使用率** | **僅 Qualcomm Snapdragon** | 必須存在 Qualcomm KGSL 介面，通常為 `/sys/class/kgsl/kgsl-3d0/gpubusy`。 |
+| **Google Pixel GPU 使用率** | **不支援** | Pixel 系列明確排除 GPU 使用率採集，GUI／CSV 顯示 `N/A`／不可用。 |
+| **CPU 使用率／頻率** | 依裝置而定 | 取決於 Android 裝置是否提供對應 CPU sysfs 介面。 |
+| **RAM／溫度** | 依裝置而定 | 取決於裝置提供的系統介面。 |
+| **功耗／電壓／電流** | 需要 `app-debug.apk` | 透過內建 BatteryService APK 採集。 |
+
+**重要實作規則：** 啟動監控時，程式應先判斷 Android 版本、SoC／廠商，以及 GPU 介面是否存在。對於不支援的指標，請顯示 `N/A`／不可用，**不要將不支援誤判為 `0%`**。
+
 <a name="核心模組與功能解析-zh"></a>
 ### 核心模組與功能解析
 
@@ -321,7 +351,8 @@ pip install PyQt5 PyQtChart requests
 | :--- | :--- | :--- |
 | 主控台顯示 [Error] 找不到 ADB 可執行文件 | 未將 ADB 加入 PATH 或未設定 `ADB_EXEC_PATH`。 | 請參考 [安裝與設定 ADB] 步驟，重新將 ADB 加入系統環境變數，或重開 CMD/IDE。 |
 | GUI 功耗欄位顯示 N/A 或 0 / 完全沒有功耗數據 | 專案目錄下缺少 `app-debug.apk`，或是手機防火牆阻擋了 8080 埠。 | 1. **確認 `app-debug.apk` 已放置在與 `main.py` 相同的資料夾下**。<br>2. 確認電腦與手機在同一網域下。<br>3. 檢查手機上是否已有 BatteryAPI 應用程式並允許相關權限。 |
-| FPS 顯示 -1 或不更新 | 當前前景 App 未繪製 SurfaceView 或 Layer 名稱匹配失敗。 | 開啟一個具體畫面的 App (如遊戲或影片播放器)，讓 SurfaceFlinger 產生圖層數據。 |
+| FPS 顯示 `N/A` / -1 或不更新 | 裝置低於 Android 12，或當前前景 App 未產生可用的 SurfaceFlinger frame data，或 Layer 名稱匹配失敗。 | 先確認 Android 版本為 12 以上，再切換至有持續畫面更新的 App（例如遊戲或影片播放器）。Android 11 以下不支援 FPS。 |
+| GPU 顯示 `N/A` | 裝置不是 Qualcomm Snapdragon、缺少 KGSL GPU 介面，或裝置為 Google Pixel 系列。 | GPU 使用率目前只支援 Qualcomm Snapdragon 且需要 KGSL 介面；Pixel 系列明確不支援。`N/A` 代表無法／不允許採集，不代表 GPU 使用率為 0%。 |
 | WiFi ADB 連線失敗 | 手機與電腦未連接在同一個 Wi-Fi 路由器下。 | 請確認手機與電腦位於相同區域網路 (LAN) 段。 |
 | ImportError: No module named 'PyQt5' | Python 環境缺少 PyQt5 依賴套件。 | 執行 `pip install PyQt5 PyQtChart requests` 進行補齊。 |
 
