@@ -113,7 +113,7 @@ Ensure your project folder contains the following files. **Make sure `app-debug.
 | **GPU Usage** | **Qualcomm Snapdragon only** | Requires the Qualcomm KGSL interface, typically `/sys/class/kgsl/kgsl-3d0/gpubusy`. |
 | **Google Pixel GPU Usage** | **Not supported** | Pixel devices are explicitly excluded from GPU usage collection by this project. GPU is shown as `N/A`/unavailable. |
 | **CPU Usage/Frequency** | Device-dependent | Availability depends on the CPU sysfs interfaces exposed by the Android device. |
-| **RAM / Temperature** | Device-dependent | Depends on the Android device and exposed system interfaces. |
+| **Battery Temperature** | Device-dependent | Depends on the Android device and exposed system interfaces. |
 | **Power / Voltage / Current** | Requires `app-debug.apk` | Collected through the bundled BatteryService APK. |
 
 **Important implementation rule:** the application should detect Android version, SoC/vendor, and GPU interface availability before starting metric collection. Unsupported metrics must be displayed as `N/A`/unavailable rather than being interpreted as `0%`.
@@ -291,7 +291,7 @@ pip install PyQt5 PyQtChart requests
 | **GPU 使用率** | **僅 Qualcomm Snapdragon** | 必須存在 Qualcomm KGSL 介面，通常為 `/sys/class/kgsl/kgsl-3d0/gpubusy`。 |
 | **Google Pixel GPU 使用率** | **不支援** | Pixel 系列明確排除 GPU 使用率採集，GUI／CSV 顯示 `N/A`／不可用。 |
 | **CPU 使用率／頻率** | 依裝置而定 | 取決於 Android 裝置是否提供對應 CPU sysfs 介面。 |
-| **RAM／溫度** | 依裝置而定 | 取決於裝置提供的系統介面。 |
+| **電池溫度** | 依裝置而定 | 取決於裝置提供的系統介面。 |
 | **功耗／電壓／電流** | 需要 `app-debug.apk` | 透過內建 BatteryService APK 採集。 |
 
 **重要實作規則：** 啟動監控時，程式應先判斷 Android 版本、SoC／廠商，以及 GPU 介面是否存在。對於不支援的指標，請顯示 `N/A`／不可用，**不要將不支援誤判為 `0%`**。
